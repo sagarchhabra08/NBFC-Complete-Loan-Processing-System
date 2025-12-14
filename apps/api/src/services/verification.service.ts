@@ -1,14 +1,16 @@
 import { client as prisma } from "@repo/db";
 import axios from "axios";
-//libraries:
+
+//libraries installed:
 //axios
-//csv-parser install kiya h
+//csv-parser 
+// pdf-parse
 //fs=file system, It is a built-in Node.js module that lets your code read, write, update, and delete files on your computer or server.
 
 import path from "path";
 import fs from "fs";
 import csv from "csv-parser";
-
+const pdfParse = require("pdf-parse");
 
 //common functions:
 async function getDocumentFromDB(loanId:number, type: string){
@@ -138,12 +140,72 @@ async function extractAadhaar(filepath:string){
 
 }
 
-async function extractSalarySlip(){
-    
+async function extractSalarySlip(filepath:string){
+    const text = await runOCR(filepath);
+
+    //matching results:
+    const employeeName = extractField(text, /Name\s*:?\s*(.+)/i);
+    const employerName = extractField(text, /Employer\s*:?\s*(.+)/i);
+    const designation = extractField(text, /Designation\s*:?\s*(.+)/i);
+    const incomeMatch = text.match(
+    /(?:Net\s*Pay|Net\s*Salary|Salary)\s*:?\s*₹?\s*([0-9,]+)/i
+    );
+
+    //removing commas:  
+    const monthlyIncome = incomeMatch
+    ? Number(incomeMatch[1].replace(/,/g, ""))
+    : null;
+
+    return{
+        employeeName,
+        employerName,
+        designation,
+        monthlyIncome
+    };
+
 }
 
-async function extractBankStatement(){
-    
+
+async function extractTextFromPDF(buffer: Buffer): Promise<string> {
+  const data = await pdfParse(buffer);
+  return data.text;
+}
+
+async function extractBankStatement(filepath: string){
+    //download pdf from cloudinary:
+    const buffer = await getDocumentFromCloudinary(filepath);
+
+    //extract text
+    const text = await extractTextFromPDF(buffer);
+
+    //to ensure pdf is text based not scanned photos for now.
+    if (text.trim().length < 50) {
+    throw new Error("Scanned or unreadable bank statement");
+    }
+   
+    //account holder's name
+    const accountHolderName =
+    extractField(text, /Account\s*Holder\s*Name\s*:?\s*(.+)/i) ||
+    extractField(text, /Customer\s*Name\s*:?\s*(.+)/i);
+
+    // bank name (shyd nahi milega).
+    // const bankName =
+    // extractField(text, /Bank\s*Name\s*:?\s*(.+)/i);
+
+    // salary credits
+    const salaryMatches = [
+        ...text.matchAll(/(?:SALARY|Salary|PAYROLL).*₹?\s*([0-9,]+)/g)
+    ];
+
+    const salaryCredits = salaryMatches.map(m =>
+        Number(m[1].replace(/,/g, ""))
+    );
+
+    return {
+    accountHolderName,
+    salaryCredits
+  };
+
 }
 
 //verifyPan -helper
@@ -394,11 +456,158 @@ export async function verifyAdhaar(loanId: number){
 
 }
 
-export async function verifySalarySlip(){
+export async function verifySalarySlip(loanId: number){
+
+    //delete previous:
+    await prisma.verificationResult.deleteMany({
+        where: {loanId, type: "SALARY_SLIP"}
+    });
+
+    //fetching salary slip from db
+    const doc = await getDocumentFromDB(loanId, "SALARY_SLIP");
+
+    //extract data via ocr api:
+    const extracted = await extractSalarySlip(doc.filepath);
+
+    //status can be only these three and initially it is verified.
+    let status: "VERIFIED" | "REUPLOAD_REQUIRED" | "ON_HOLD" = "VERIFIED";
+
+
+    if(!extracted.employeeName || !extracted.employerName|| !extracted.monthlyIncome){
+        status = "REUPLOAD_REQUIRED";
+
+    return prisma.verificationResult.create({
+        data:{
+            loanId,
+            type: "SALARY_SLIP",
+            status,
+            result:{
+                reason: "Missing/ unreadable fields"
+            }
+        }
+    });
+    }
+
+    //fetch user
+    const user = await prisma.user.findUnique({
+        where: {id: doc.userId}
+    });
+
+    if(!user) throw new Error("User not found");
+
+    //name check:
+    const nameMatch = extracted.employeeName.toLowerCase() === user.name?.toLowerCase();
+    if (!nameMatch) {
+    status = "REUPLOAD_REQUIRED";
+    }
+    // save verification result
+    const result = await prisma.verificationResult.create({
+        data: {
+        loanId,
+        type: "SALARY_SLIP",
+        status,
+        result: {
+            employeeName: extracted.employeeName,
+            employerName: extracted.employerName,
+            designation: extracted.designation,
+            monthlyIncome: extracted.monthlyIncome,
+        }
+        }
+    });
+
+    //employer name and income save krna tha pr schema me nahi h.
+    //to be used by bank statement later on
+
+  return result;
 
 }
 
-export async function verifyBankStatemnt(){
+
+export async function verifyBankStatement(loanId:number){
+    //delete old entries
+    await prisma.verificationResult.deleteMany({
+        where: {loanId, type: "BANK_STATEMENT"}
+    });
+
+    const doc = await getDocumentFromDB(loanId, "BANK_STATEMENT");
+
+    let extracted;
+    try{
+        extracted = await extractBankStatement(doc.filepath);
+    }catch(err){
+        return prisma.verificationResult.create({
+            data: {
+                loanId,
+                type:"BANK_STATEMENT",
+                status:"REUPLOAD_REQUIRED",
+                result:{
+                    reason: "Uploaded pdf is unreadable"
+                }
+            }
+        });
+    }
+
+    let status: "VERIFIED"|"REUPLOAD_REQUIRED"|"ON_HOLD" = "VERIFIED";
+
+    //if enough salary credits weren't found or 
+    if(!extracted.accountHolderName|| extracted.salaryCredits.length ===0){
+        status = "REUPLOAD_REQUIRED";
+         return prisma.verificationResult.create({
+            data: {
+                loanId,
+                type:"BANK_STATEMENT",
+                status:"REUPLOAD_REQUIRED",
+                result:{
+                    reason: "Unable to extract account holder or salary credits"
+                }
+            }
+        });
+
+    }
+
+    const user = await prisma.user.findUnique({
+        where: { id: doc.userId }
+        });
+    if (!user) throw new Error("User not found");
+
+    //name match not so strict.
+   const nameMatch = extracted.accountHolderName.toLowerCase().includes(user.name?.toLowerCase() ?? "");
+
+    if (!nameMatch) {
+        status = "REUPLOAD_REQUIRED";
+    }
+
+    const salaried = extracted.salaryCredits.length >= 2;
+    if (!salaried) {
+         return prisma.verificationResult.create({
+            data: {
+                loanId,
+                type:"BANK_STATEMENT",
+                status:"ON_HOLD",
+                result:{
+                    reason: "not enough salary credits"
+                }
+            }
+        });
+  }
+    //average salary:
+    const avgSalary = extracted.salaryCredits.reduce((a, b) => a + b, 0) / extracted.salaryCredits.length;
+
+    //store results:
+    return prisma.verificationResult.create({
+        data: {
+        loanId,
+        type: "BANK_STATEMENT",
+        status,
+        result: {
+            accountHolderName: extracted.accountHolderName,
+            salaryCredits: extracted.salaryCredits,
+            averageSalary: Math.round(avgSalary),
+            salaried: true,
+            nameMatch: nameMatch
+        }
+        }
+    });
 
 }
 
