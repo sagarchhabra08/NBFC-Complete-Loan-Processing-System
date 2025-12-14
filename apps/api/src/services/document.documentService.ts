@@ -129,13 +129,34 @@ export const documentService ={
 
   // 1️⃣ Upload PDF to Cloudinary
   const cloudinaryUrl = await uploadImage(filePath);
+   // 2. Check if upload was successful
+  if (!cloudinaryUrl) {
+    throw new Error("Failed to upload PDF to Cloudinary");
+  }
+
+  // 3. Verify the Cloudinary URL is accessible
+  let status = "UPLOADED";
+
+  try {
+    const response = await fetch(cloudinaryUrl, { method: "HEAD" });
+
+    if (!response.ok) {
+      status = "FAILED";
+      console.error(
+        `Cloudinary URL verification failed with status: ${response.status}`
+      );
+    }
+  } catch (error) {
+    console.error("Error verifying Cloudinary URL:", error);
+    status = "FAILED";
+  }
 
   // 2️⃣ Save document metadata
   const document = await prisma.document.create({
     data: {
       type,
       filepath: cloudinaryUrl,
-      status: "GENERATED",
+      status: status,
       userId,
       loanId,
     },
