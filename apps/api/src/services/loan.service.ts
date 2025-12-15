@@ -123,9 +123,7 @@ export async function getLoanWithDetails(loanId: number) {
   return loan;
 }
 
-/* ----------------------------------
-   7. Get All Loans of a User
----------------------------------- */
+
 export async function getUserLoans(userId: number) {
   return prisma.loan.findMany({
     where: { userId },
