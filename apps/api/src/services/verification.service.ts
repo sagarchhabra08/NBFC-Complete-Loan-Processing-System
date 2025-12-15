@@ -1,11 +1,19 @@
 import { client as prisma } from "@repo/db";
 import axios from "axios";
-
+import sgMail from "@sendgrid/mail";
 //libraries installed:
 //axios
 //csv-parser 
 // pdf-parse
 //fs=file system, It is a built-in Node.js module that lets your code read, write, update, and delete files on your computer or server.
+
+// main functions/entrypoints/tools to be used:
+//verifyPAN
+//verifyAadhaar
+//verifySalarySlip
+//verifyBankStatement
+//sendEmailOTP
+//verifyEmail
 
 import path from "path";
 import fs from "fs";
@@ -246,7 +254,7 @@ export async function verifyPAN(loanId:number){
     //check blurry  pan:
     if (!extracted.pan || !extracted.name|| !extracted.dob) {
     status= "REUPLOAD_REQUIRED";
-    const result = await prisma.verificationResult.create({
+    return await prisma.verificationResult.create({
         data:{
             loanId,
             type: "PAN",
@@ -256,7 +264,6 @@ export async function verifyPAN(loanId:number){
             }
         }
      });
-    return result;
     }
 
     //verify whether they are original or not from a csv file for now.
@@ -317,7 +324,7 @@ export async function verifyPAN(loanId:number){
     }
 
     //saving verfication result:
-     const result = await prisma.verificationResult.create({
+     return await prisma.verificationResult.create({
         data:{
             loanId,
             type: "PAN",
@@ -334,7 +341,6 @@ export async function verifyPAN(loanId:number){
             }
         }
     });
-    return result;
 }
 
 
@@ -373,7 +379,7 @@ export async function verifyAdhaar(loanId: number){
     //check blurry aadhaar:
     if (!extracted.aadhaar || !extracted.name|| !extracted.dob) {
     status= "REUPLOAD_REQUIRED";
-    const result = await prisma.verificationResult.create({
+    return await prisma.verificationResult.create({
         data:{
             loanId,
             type: "AADHAAR",
@@ -384,7 +390,6 @@ export async function verifyAdhaar(loanId: number){
             }
         }
      });
-    return result;
     };
 
     //verify whether they are original or not from a csv file for now.
@@ -397,7 +402,7 @@ export async function verifyAdhaar(loanId: number){
 
     if(!aadhaarExists){
         status="REJECTED";
-        const result = await prisma.verificationResult.create({
+        return await prisma.verificationResult.create({
         data:{
             loanId,
             type: "AADHAAR",
@@ -408,7 +413,6 @@ export async function verifyAdhaar(loanId: number){
             }
         }
      });
-    return result;
     }
 
 
@@ -428,18 +432,6 @@ export async function verifyAdhaar(loanId: number){
     if(!aadhaarFormatValid||!nameMatch ||!dobMatch){
         status = "REUPLOAD_REQUIRED";
     }
-    const result = await prisma.verificationResult.create({
-        data:{
-            loanId,
-            type: "AADHAAR",
-            status,
-            result:{
-                aadhaarFormatValid: aadhaarFormatValid,
-                nameMatch: nameMatch,
-                dobMatch: dobMatch,
-            }
-        }
-    });
     
     if(status=="VERIFIED"){
         const aadhaarLast4 = extracted.aadhaar.slice(-4);
@@ -452,7 +444,18 @@ export async function verifyAdhaar(loanId: number){
         });
     };
 
-    return result;
+    return await prisma.verificationResult.create({
+    data:{
+        loanId,
+        type: "AADHAAR",
+        status,
+        result:{
+            aadhaarFormatValid: aadhaarFormatValid,
+            nameMatch: nameMatch,
+            dobMatch: dobMatch,
+        }
+    }
+    });
 
 }
 
@@ -475,8 +478,7 @@ export async function verifySalarySlip(loanId: number){
 
     if(!extracted.employeeName || !extracted.employerName|| !extracted.monthlyIncome){
         status = "REUPLOAD_REQUIRED";
-
-    return prisma.verificationResult.create({
+    return await prisma.verificationResult.create({
         data:{
             loanId,
             type: "SALARY_SLIP",
@@ -501,7 +503,7 @@ export async function verifySalarySlip(loanId: number){
     status = "REUPLOAD_REQUIRED";
     }
     // save verification result
-    const result = await prisma.verificationResult.create({
+    return await prisma.verificationResult.create({
         data: {
         loanId,
         type: "SALARY_SLIP",
@@ -518,8 +520,6 @@ export async function verifySalarySlip(loanId: number){
     //employer name and income save krna tha pr schema me nahi h.
     //to be used by bank statement later on
 
-  return result;
-
 }
 
 
@@ -535,7 +535,7 @@ export async function verifyBankStatement(loanId:number){
     try{
         extracted = await extractBankStatement(doc.filepath);
     }catch(err){
-        return prisma.verificationResult.create({
+        return await prisma.verificationResult.create({
             data: {
                 loanId,
                 type:"BANK_STATEMENT",
@@ -552,7 +552,7 @@ export async function verifyBankStatement(loanId:number){
     //if enough salary credits weren't found or 
     if(!extracted.accountHolderName|| extracted.salaryCredits.length ===0){
         status = "REUPLOAD_REQUIRED";
-         return prisma.verificationResult.create({
+         return await prisma.verificationResult.create({
             data: {
                 loanId,
                 type:"BANK_STATEMENT",
@@ -579,7 +579,7 @@ export async function verifyBankStatement(loanId:number){
 
     const salaried = extracted.salaryCredits.length >= 2;
     if (!salaried) {
-         return prisma.verificationResult.create({
+         return await prisma.verificationResult.create({
             data: {
                 loanId,
                 type:"BANK_STATEMENT",
@@ -594,7 +594,7 @@ export async function verifyBankStatement(loanId:number){
     const avgSalary = extracted.salaryCredits.reduce((a, b) => a + b, 0) / extracted.salaryCredits.length;
 
     //store results:
-    return prisma.verificationResult.create({
+    return await prisma.verificationResult.create({
         data: {
         loanId,
         type: "BANK_STATEMENT",
@@ -611,32 +611,95 @@ export async function verifyBankStatement(loanId:number){
 
 }
 
-
-export async function emailVerification(){
-
+export async function verifyPhone(){
+    //not free so we can only check regex etc
 }
 
-export async function phoneVerification(){
+sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
+const emailOtpStore = new Map<
+  string,
+  { otp: string; expiresAt: number }
+>();
+
+async function sendOTPEmail(email: string, otp: string) {
+  await sgMail.send({
+    to: email,
+    from: "NBFC_LOAN_SYSTEM@outlook.com",
+    subject: "Your Email Verification OTP",
+    text: `Your OTP is ${otp}. It is valid for 5 minutes.`,
+  });
 }
 
-export async function cibilVerification(){
+export async function sendEmailOTP(email: string){
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    emailOtpStore.set(email, {
+    otp,
+    expiresAt: Date.now() + 5 * 60 * 1000 // 5 min
+  });
+
+  //awaits sendGrid to act:
+  await sendOTPEmail(email, otp); 
+
+  return {
+    success: true,
+    message: "OTP sent to given email"
+  }
+}
+
+
+export async function verifyEmail(loanId: number, email: string,otp: string){
+    
+    // delete previous EMAIL verification if any
+    await prisma.verificationResult.deleteMany({
+        where: { loanId, type: "EMAIL" },
+    });
+
+    const record = emailOtpStore.get(email);
+
+    let reason = "Invailid_OTP";
+    if(!record) reason = "OTP_NOT_FOUND";
+    else if(Date.now()>record.expiresAt) reason="OTP_EXPIRED";
+
+    //making isVAlid strictly boolean
+    const isValid = !!(record && record.otp === otp && Date.now() <= record.expiresAt);
+
+    if(isValid) reason = "OTP_CONFIRMED";
+    //delete otp after attempt:
+    emailOtpStore.delete(email);
+
+    return await prisma.verificationResult.create({
+        data:{
+            loanId,
+            type:"EMAIL",
+            status: isValid ? "VERIFIED": "REJECTED",
+            result:{
+                email,
+                verified: isValid,
+                reason: reason
+            }
+        }
+    });
+};
+
+export async function VerifyCIBIL(){
 //idk how yet
 }
 
-export async function EmployerVerification(){
+export async function verifyEmployerFromSlip(){
 //not now
-}
-
-
-//verification status:
-
-export async function verificationStatus(loanId:number){
-
+//since schema doesn't has a employer
 }
 
 
 //Admin functions:
+
+//verification status:
+export async function verificationStatus(loanId:number){
+
+}
 
 export async function verifyPendingsList(){
 
@@ -659,6 +722,6 @@ export async function viewUserDocument(){
 }
 
 //also verifies employment status and salary slip via contacting employer.
-export async function verifyEmployer() {
+export async function verifyEmployement() {
     //checks if employer verification is done from db
 }
