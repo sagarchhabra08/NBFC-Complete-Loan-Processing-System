@@ -17,21 +17,27 @@ export async function processMessage({
   message,
   loanId,
 }: MasterAgentInput): Promise<string> {
-  
+
   const intent = await checkIntent(message);
 
-//sales
+  //sales
   if (intent === "SALES") {
+    if (!loanId) {
+      return "Error: Loan ID is required for sales operations.";
+    }
     const reply = await salesAgent(message, loanId);
     return reply;
   }
-//documention
+  //documention
   if (intent === "DOCUMENTATION") {
 
     const reply = await documentationAgent(message);
 
     // Only check uploads when agent signals it
     if (reply === "CHECK_UPLOAD_STATUS") {
+      if (!loanId) {
+        return "Error: Loan ID is required for document verification.";
+      }
       const panUploaded = await safeDocCheck(loanId, "PAN");
       const aadhaarUploaded = await safeDocCheck(loanId, "AADHAAR");
 
@@ -45,13 +51,16 @@ export async function processMessage({
     }
     return reply;
   }
-//underwriting 
+  //underwriting 
   if (intent === "UNDERWRITING") {
-    
+    if (!loanId) {
+      return "Error: Loan ID is required for underwriting operations.";
+    }
+
     const reply = await underwritingAgent(message, loanId);
 
     if (reply === "READY_FOR_SANCTION_LETTER") {
-      
+
       // Generate sanction letter PDF
       const filePath = await documentService.generateSanctionLetter(loanId);
 
@@ -85,8 +94,8 @@ async function checkIntent(message: string): Promise<AgentIntent> {
     Message: ${message}
   `);
 
-const raw = getTextContent(res.content);
-const intent = raw.trim().toUpperCase();
+  const raw = getTextContent(res.content);
+  const intent = raw.trim().toUpperCase();
 
   if (intent === "SALES" || intent === "DOCUMENTATION" || intent === "UNDERWRITING") {
     return intent as AgentIntent;
